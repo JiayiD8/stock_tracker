@@ -35,6 +35,21 @@ def create_slide_preview(slide_type, content, ticker=None):
         ax.text(0.5, 0.4, ticker, color=accent_color, fontsize=42, ha='center', weight='bold')
 
     elif slide_type == "key_takeaways":
+        # Key takeaways slide
+        # ax.text(0.5, 0.85, "Three Key Takeaways ⚠️", color=title_color, fontsize=title_size, ha='center', weight='bold')
+        # takeaways = content.split('\n')
+        # takeaways = [t for t in takeaways if t.strip() and t.strip().startswith(('1.', '2.', '3.'))]
+        # y_positions = [0.7, 0.5, 0.3]
+        # for i, takeaway in enumerate(takeaways[:3]):
+        #     if i < len(y_positions):
+            
+        #         short_takeaway = takeaway[:50] + "..." if len(takeaway) > 50 else takeaway
+        #         rect = plt.Rectangle((0.1, y_positions[i]-0.05), 0.8, 0.1, fill=True, 
+        #                            color='#dbeafe', alpha=0.5, transform=ax.transAxes)
+        #         ax.add_patch(rect)
+        #         ax.text(0.5, y_positions[i], short_takeaway, color=text_color, fontsize=content_size,
+        #               ha='center', wrap=True)
+        # NEW ADDED
         ax.text(0.5, 0.85, "Three Key Takeaways ⚠️", color=title_color, fontsize=title_size, ha='center', weight='bold')
         
         # Extract takeway lines with URLs
@@ -43,8 +58,11 @@ def create_slide_preview(slide_type, content, ticker=None):
         
         for i, takeaway in enumerate(takeaways[:3]):
             if i < len(y_positions):
+                # Check for URL
                 url_match = re.search(r'\[(https?://[^\]]+)\]', takeaway)
+                # Clean takeaway text
                 takeaway_clean = re.sub(r'\[https?://[^\]]+\]', '', takeaway).strip()
+                # Shorten for display
                 short_takeaway = takeaway_clean[:50] + "..." if len(takeaway_clean) > 50 else takeaway_clean
                 
                 rect = plt.Rectangle((0.1, y_positions[i]-0.05), 0.8, 0.1, fill=True, 
@@ -278,6 +296,7 @@ def create_ppt(ticker, financial_report, status_text):
                     r._r.get_or_add_rPr().add_hlinkClick(rId)
                 except Exception as e:
                     print(f"Error adding hyperlink: {e}")
+            
         
     # ---- Slide 2: Investment Environment ----
     slide = ppt.slides.add_slide(slide_layout)

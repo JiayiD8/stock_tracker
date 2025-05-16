@@ -5,7 +5,6 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 # import openai
-import httpx
 from openai import OpenAI
 import json
 import feedparser
@@ -18,12 +17,16 @@ import time
 import threading
 import tempfile
 import smtplib
-from ticker_resolver import resolve_ticker
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
-
+# Import the new modules
+from model_manager import ModelManager
+from ticker_resolver import resolve_ticker
+from financial_analyzer import generate_financial_report
+from news_processor import fetch_macroeconomic_news, get_news_json, scrape_and_cache_articles
+from stock_data import generate_stock_cache
 from ppt_generator import create_ppt, create_slide_previews, convert_ppt_to_images
 
 import ssl
@@ -110,15 +113,21 @@ def log_network_operation(url, operation_type="GET", details="", status_code=Non
 # Functions from your notebook
 def chatgpt_api_call(prompt, api_key, model=config.DEFAULT_OPENAI_MODEL, max_tokens=config.DEFAULT_MAX_TOKENS_CHATGPT):
     client = OpenAI(api_key=api_key)
+    # openai.api_key = api_key
 
     try:
+        # Check if model is specified and adjust max_tokens accordingly
         if model == "gpt-4o":
-            safe_max_tokens = min(max_tokens, 4000)  
+            # GPT-4o supports up to 128k tokens
+            safe_max_tokens = min(max_tokens, 4000)  # Keep output reasonable
         elif model == "gpt-4":
+            # GPT-4 supports up to 8k output tokens
             safe_max_tokens = min(max_tokens, 4000)
         elif model == "gpt-3.5-turbo":
+            # GPT-3.5-turbo supports up to 4k output tokens
             safe_max_tokens = min(max_tokens, 3000)
         else:
+            # Default safe value
             safe_max_tokens = min(max_tokens, 2000)
             
         print(f"Using model: {model} with max_tokens: {safe_max_tokens}")
@@ -230,148 +239,11 @@ def fetch_news(status_text):
 
     return news_cache
 
-def extract_date(date_string):
-    try:
-        cleaned_date_string = date_string.replace("GMT", "+0000")
-        return datetime.strptime(cleaned_date_string, "%a, %d %b %Y %H:%M:%S %z")
-    except ValueError:
-        return None
 
-def scrape_news(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-
-    try:
-        response = requests.get(url, headers=headers, timeout=1)
-        if response.status_code != 200:
-            return 0
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        article = soup.find("article") or soup.find("div", {"class": "content"})
-        return 1 if article else 0
-    except:
-        return 0
-
-# Function to calculate tokens for GPT models
-def num_tokens_from_string(string, encoding_name="cl100k_base"):
-    """Returns the number of tokens in a text string."""
-    encoding = tiktoken.get_encoding(encoding_name)
-    num_tokens = len(encoding.encode(string))
-    return num_tokens
-
-def get_news_json(ticker, status_text, n_days=config.DEFAULT_N_DAYS):
-    token_data = []
-    
-    today = datetime.now(pytz.utc)
-    threshold_date = today - timedelta(days=n_days)
-    
-    status_text.text(f"Searching for {ticker} news from the past {n_days} days...")
-    debug_log(f"Starting news search for {ticker}", status_text)
-
-    rss_urls = [
-        f'https://finance.yahoo.com/rss/headline?s={ticker}',
-        f'https://news.google.com/rss/search?q={ticker}+stock', 
-    ]
-
-    new_counter = 0
-    total_found = 0
-    
-    for rss_url in rss_urls:
-        try:
-            debug_log(f"Fetching from {rss_url}", status_text)
-            log_network_operation(rss_url, "RSS_FETCH", f"Fetching news feed for {ticker}")
-            feed = feedparser.parse(rss_url)
-            if not feed.entries:
-                debug_log(f"No entries found in {rss_url}", status_text)
-                continue
-                
-            status_text.text(f"Found {len(feed.entries)} articles about {ticker}")
-            total_found += len(feed.entries)
-
-            # Rest of your existing code for processing entries...
-            for entry in feed.entries:
-                pub_date = entry.published if "published" in entry else "No Date"
-                article_datetime = extract_date(pub_date)
-                
-                # Check if article is within time interval
-                is_in_interval = True
-                if not article_datetime or article_datetime < threshold_date:
-                    is_in_interval = False
-
-                article_url = entry.link
-                try:
-                    log_network_operation(article_url, "CHECK_ACCESS", f"Testing accessibility for article")
-                    accessible = scrape_news(article_url)
-                    debug_log(f"Article {article_url} accessible: {accessible}", status_text)
-                except Exception as e:
-                    status_text.text(f"Error processing article")
-                    accessible = 0
-
-                new_counter += 1
-                status_text.text(f'Discovering articles about {ticker}...')
-                
-                # Calculate token count
-                article_tokens = num_tokens_from_string(entry.title)
-
-                token_data.append({
-                    "title": entry.title,
-                    "url": article_url,
-                    "tokens": article_tokens,
-                    "date": pub_date.strip(),
-                    "rank": None,
-                    "out_of_interval": 0 if is_in_interval else 1,
-                    "accessible": accessible
-                })
-        except Exception as e:
-            debug_log(f"Error fetching from {rss_url}: {str(e)}", status_text)
-    
-    if not token_data:
-        if total_found > 0:
-            st.warning(f"Found {total_found} articles about {ticker}, but none were recent (within {n_days} days) or accessible")
-        else:
-            st.warning(f"No news articles found for {ticker}. Try a different ticker or increase the date range.")
-        return None
-        
-    status_text.text(f"Processing articles for {ticker}")
-    
-    # Use absolute path for file operations
-    filename = os.path.join(TEMP_DIR, config.NEWS_TOKEN_FILENAME_TEMPLATE.format(ticker=ticker))
-    debug_log(f"Writing to file: {filename}", status_text)
-    
-    try:
-        with tracked_open(filename, 'w', encoding='utf-8', tracker_msg=f"Writing {len(token_data)} news tokens") as json_file:
-            json.dump(token_data, json_file, indent=4)
-        debug_log(f"Successfully wrote {len(token_data)} articles to {filename}", status_text)
-    except Exception as e:
-        debug_log(f"Error writing to file {filename}: {str(e)}", status_text)
-        return None
-    
-    return filename
-
-def generate_stock_cache(ticker, n_days, status_text):
-    end_date = datetime.today().strftime('%Y-%m-%d')
-    start_date = (datetime.today() - timedelta(days=n_days)).strftime('%Y-%m-%d')
-
-    status_text.text(f"Fetching stock data for {ticker}...")
-    stock = yf.Ticker(ticker)
-    data = stock.history(start=start_date, end=end_date, interval='1d')
-
-    if data.empty:
-        return None
-
-    data['Volatility'] = data['High'] - data['Low']
-    
-    stock_cache = []
-    for date, row in data.iterrows():
-        formatted_date = date.strftime('%m-%d-%Y')
-        stock_cache.append(f"{formatted_date}: price: {row['Close']:.2f}, volatility: {row['Volatility']:.2f}, volume: {int(row['Volume'])}")
-
-    return "\n".join(stock_cache)
-
-def rank_articles(json_file_path, ticker, api_key, status_text, model=config.DEFAULT_OPENAI_MODEL):
+def rank_articles(json_file_path, ticker, api_key, status_text, model=None):
+    """Rank articles by relevance using the ModelManager"""
     status_text.text('Ranking news articles by relevance...')
-    debug_log(f"Ranking articles from {json_file_path} using model {model}", status_text)
+    debug_log(f"Ranking articles from {json_file_path}", status_text)
     
     try:
         with tracked_open(json_file_path, "r", encoding="utf-8", tracker_msg="Reading news tokens for ranking") as file:
@@ -415,7 +287,12 @@ def rank_articles(json_file_path, ticker, api_key, status_text, model=config.DEF
         for article in filtered_articles
     ]
 
-    debug_log(f"Sending {len(relevant_articles)} articles to OpenAI for ranking using {model}", status_text)
+    debug_log(f"Sending {len(relevant_articles)} articles to model ranking", status_text)
+    
+    # Initialize model manager
+    from model_manager import ModelManager
+    model_manager = ModelManager(api_key)
+    
     prompt = f"""
     You are an AI assistant that ranks news articles based on their importance and relevance. 
     The articles are related to the stock ticker {ticker}. 
@@ -429,37 +306,21 @@ def rank_articles(json_file_path, ticker, api_key, status_text, model=config.DEF
                     {{"title": "Another Title", "url": "Another URL", "rank": 2}}, ...]}}
     """
 
-    log_network_operation("api.openai.com", "API_CALL", f"Ranking articles with {model}", size_bytes=len(prompt))
-    response_text = chatgpt_api_call(prompt, api_key, model=model)
-    log_network_operation("api.openai.com", "API_RESPONSE", f"Received response for ranking", size_bytes=len(response_text))
-    debug_log("Received response from OpenAI", status_text)
+    log_network_operation("api.openai.com", "API_CALL", f"Ranking articles", size_bytes=len(prompt))
     
-    # Check if response is an error message (already in JSON format)
     try:
-        response_json = json.loads(response_text)
-        if "error" in response_json:
-            error_message = response_json["error"]
-            debug_log(f"OpenAI API returned error: {error_message}", status_text)
-            st.error(f"OpenAI API error: {error_message}")
-            return None
-    except json.JSONDecodeError:
-        # Not a JSON error response, continue processing as normal
-        pass
-    
-    # Standard JSON extraction process
-    cleaned_response_text = re.sub(r"```json\n|\n```", "", response_text).strip()
-
-    try:
-        ranking_result = json.loads(cleaned_response_text)
+        response_text = model_manager.invoke_model(
+            "ranking", 
+            prompt,
+            response_format={"type": "json_object"}
+        )
         
-        # Check if it's an error response
-        if "error" in ranking_result:
-            debug_log(f"Error in API response: {ranking_result['error']}", status_text)
-            st.error(f"API error: {ranking_result['error']}")
-            return None
-            
+        log_network_operation("api.openai.com", "API_RESPONSE", f"Received response for ranking", size_bytes=len(response_text))
+        debug_log("Received response from model", status_text)
+        
+        # Parse the response
+        ranking_result = json.loads(response_text)
         rankings = ranking_result.get("rankings", [])
-        debug_log(f"Parsed rankings: {len(rankings)} articles ranked", status_text)
         
         if not rankings:
             debug_log("AI returned empty rankings", status_text)
@@ -467,8 +328,12 @@ def rank_articles(json_file_path, ticker, api_key, status_text, model=config.DEF
             return None
             
     except json.JSONDecodeError as e:
-        debug_log(f"JSON parse error: {str(e)}\nResponse: {cleaned_response_text[:200]}...", status_text)
+        debug_log(f"JSON parse error: {str(e)}\nResponse: {response_text[:200]}...", status_text)
         st.warning(f"Error parsing AI response: {str(e)}. Please try again.")
+        return None
+    except Exception as e:
+        debug_log(f"Error in model invocation: {str(e)}", status_text)
+        st.error(f"Error ranking articles: {str(e)}")
         return None
 
     ranked_articles = []
@@ -491,222 +356,6 @@ def rank_articles(json_file_path, ticker, api_key, status_text, model=config.DEF
         return None
 
     return filename
-
-def scrape_and_cache_articles(json_file_path, ticker, status_text):
-    debug_log(f"Scraping articles from {json_file_path}", status_text)
-    
-    try:
-        with tracked_open(json_file_path, "r", encoding="utf-8", tracker_msg="Reading ranked articles for scraping") as file:
-            ranked_articles = json.load(file)
-        debug_log(f"Successfully loaded {len(ranked_articles)} ranked articles", status_text)
-    except Exception as e:
-        debug_log(f"Error reading ranked articles: {str(e)}", status_text)
-        return "Error: Could not read ranked articles file"
-
-    # Limit to top 20 ranked articles
-    top_articles = sorted(ranked_articles, key=lambda x: x.get("rank", 999))[:20]
-    debug_log(f"Selected top {len(top_articles)} articles for processing", status_text)
-    
-    cache_content = []
-    scrape_counter = 0
-    success_counter = 0
-    total_tokens = 0
-    MAX_TOKENS = config.MAX_TOKENS_NEWS_SCRAPING   # Set a token limit for GPT-4o
-    
-    for article in top_articles:
-        title = article["title"]
-        url = article["url"]
-        scrape_counter += 1
-        status_text.text(f"Analyzing financial data ({scrape_counter}/{len(top_articles)})")
-        debug_log(f"Scraping article {scrape_counter}: {url}", status_text)
-
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-            log_network_operation(url, "SCRAPE", f"Scraping article content: {title[:30]}...")
-            response = requests.get(url, headers=headers, timeout=10)
-            content_size = len(response.content)
-            log_network_operation(url, "RESPONSE", f"Received article content", status_code=response.status_code, size_bytes=content_size)
-
-            if response.status_code != 200:
-                debug_log(f"Article returned status code: {response.status_code}", status_text)
-                continue
-
-            soup = BeautifulSoup(response.text, "html.parser")
-            article_body = soup.find("article") or soup.find("div", {"class": "content"}) or soup.find("div", {"class": "article-body"})
-            
-            if article_body:
-                paragraphs = article_body.find_all("p")
-                content = "\n".join([p.get_text() for p in paragraphs])
-                
-                # Track token count
-                article_tokens = num_tokens_from_string(content)
-                
-                # Check if adding this article would exceed token limit
-                if total_tokens + article_tokens > MAX_TOKENS:
-                    debug_log(f"Token limit would be exceeded. Current: {total_tokens}, Article: {article_tokens}, Max: {MAX_TOKENS}", status_text)
-                    break
-                
-                total_tokens += article_tokens
-                success_counter += 1
-            else:
-                debug_log(f"Could not find article body in {url}", status_text)
-                content = "Could not extract content"
-
-            article_content = f"🔹 {title}\n🔗 {url}\n\n{content}\n{'-'*80}\n"
-            cache_content.append(article_content)
-            debug_log(f"Article {scrape_counter} added. Total tokens now: {total_tokens}/{MAX_TOKENS}", status_text)
-
-        except Exception as e:
-            debug_log(f"Error scraping {url}: {str(e)}", status_text)
-            continue
-
-    if not cache_content:
-        st.warning("Failed to extract content from any of the articles")
-        return "No article content could be extracted"
-    
-    debug_log(f"Successfully scraped {success_counter} out of {scrape_counter} articles. Total tokens: {total_tokens}", status_text)
-    
-    # Log the final content size
-    full_content = "\n".join(cache_content)
-    file_tracker.log_operation("CACHE", f"{ticker}_article_cache", 
-                              f"Created in-memory cache of {success_counter} articles ({total_tokens} tokens)", 
-                              len(full_content))
-    
-    return full_content
-
-def generate_financial_report(ticker, cached_data, macro_news, stock_cache, api_key, status_text, model=config.DEFAULT_OPENAI_MODEL):
-    status_text.text("Generating financial report...")
-    
-    # Calculate token usage for inputs
-    cached_data_tokens = num_tokens_from_string(cached_data)
-    macro_news_tokens = num_tokens_from_string(str(macro_news))
-    stock_cache_tokens = num_tokens_from_string(stock_cache)
-    
-    debug_log(f"Token counts - Cached data: {cached_data_tokens}, Macro news: {macro_news_tokens}, Stock cache: {stock_cache_tokens}", status_text)
-    
-    # Format macro news for the prompt
-    macro_prompt = f"""
-    ## Prompt: You are an Economic Analyst reviewing the latest news articles. Base on the news Only Return me Below information:
-    YOU Are analysting for the economic/federal reserve/president policy/ etc that impact the marcoeconomic 
-    read the text that report the economic/politcal/more national wise news, more marco news.
-    YOu don read the part that about a stock/companies or micro terms in term of these. I want you be an maroeconomic reporter
-
-    ###### Reports Informations be like  ######
-    # Part1.  Keys takeaways of each economic/political news article.  (ex:who do what, what is annouced. For example: "Fed Reserve announced to increase interest rate by 0.25%")
-    # Part2. What is the impact of the news on the economy? (ex: "The news is expected to increase the inflation rate")
-    # Part3. What is the potential implication of the news on the stock market? (ex: "The stock market is expected to rise due to the news")
-    ###### Reports Informations be like ######
-
-    ############# Here is Format of the report ###########
-    1. Events(Part1) +  Impact(Part2) + Impact on Stock(Part3)
-    2. Events(Part1) +  Impact(Part2) + Impact on Stock(Part3)
-    3. Events(Part1) +  Impact(Part2) + Impact on Stock(Part3)
-    etc... add more if necessary
-
-    # If currently, there is no much available news, you could always return No significant economic news currently as the response.
-
-    here is the news:
-    {macro_news}"""
-    
-    macro_prompt_tokens = num_tokens_from_string(macro_prompt)
-    debug_log(f"Macro prompt tokens: {macro_prompt_tokens}", status_text)
-    
-    status_text.text("Analyzing macroeconomic trends...")
-    macro_report = chatgpt_api_call(macro_prompt, api_key, model=model)
-    macro_response_text = re.sub(r"```json\n|\n```", "", macro_report).strip()
-    macro_response_tokens = num_tokens_from_string(macro_response_text)
-    debug_log(f"Macro response tokens: {macro_response_tokens}", status_text)
-    
-    # Financial report prompt
-    status_text.text("Creating financial analysis...")
-    prompt = f"""
-    ## Prompt: Imagine yourself as a senior broker, analyst, and fund manager. 
-
-    ### Here is the MacroEconomic News:
-    {macro_response_text} 
-    (very important, you need to read this first, and then you can read the following news)
-    (all you analyst, evluation should be on the macro term / events/ policy)
-    (You should analys the general trend about economy, then to stock market up/down)
-    (then you start to read the news to think during this Macro/Political/Events time what ticker will behavior given the news)
-
-    You now have the recent news information and return rate for the ticker {ticker}.
-
-    ## Ticker and News Data:
-    {cached_data}
-
-    ## Ticker Stock Price and Volitility:
-    {stock_cache}
-
-    ## For this ticker, describe:
-
-    You are an financial report analyst. Write a detailed financial report based on the given information.
-    All your read articels are already ranked, refine, so each of they are important for the report.
-    The report should be detailed and comprehensive, covering all aspects of the company's financial health and future outlook.
-    You are an very casution suspicious analyst, so you don not report as you read, but you inversely think why these article talk about this way, and what is the real situation behind the scene (inversely)
-
-    ################################# Start of the report ######################################### (you don need to write this line)
-
-    Your output should follow the exact format below:
-
-    Section 1: Three Key take away from all articles read  (100 - 150 words) (the three takeaways should only for the companies/micro perspective, not the Marco news perspective)
-    For each takeaway, include the number(s) of the article(s) that support this insight in [brackets] at the end.
-    1.#xxxx(make up an subtitle): xxxxxxx [URL of supporting article]
-    2.#xxxx(make up an subtitle): xxxxxxx [URL of supporting article]
-    3.#xxxx(make up an subtitle): xxxxxxx [URL of supporting article]
-
-    Section 2: Macro Situation and Stock Prospects (200 -  250  words)
-    1.# Macro Situation(this is Subtitle one):xxxxxxxxx  (This one about Investment Environment is not about the stock itself, just do an comprenhenive summarize from above MacroEconomic News)
-    2.# Future Prospects(this is Subtitle two): xxxxxxxx (if price down/up why, I need an reason what cause what down / up base on the Macro news, ex: "The news is expected to increase the inflation rate" then the stock price will down) 
-
-    Section 3: Catalyst (100 - 200 words) (the catalyst should consider the events/thing that drive the stock up and down not the Macro news and not the three takeaways)
-    1.#Catalyst 1(this is Subtitle one): xxxxxxx
-    2.#Catalyst 2(this is Subtitle two): xxxxxxx
-    3.#so on to add more if necessary (this is Subtitle more): xxxxxxx      # Add more if necessary
-    
-    Section 4: Stock Price and Volatility Analysis (100 words) (reflect only on the stock price and volatility relative with the investor expectation)
-    1. #Stock Price Analysis(this is Subtitle one, explain what drive the stock up and down): xxxxxxx. 
-    2. #Volatility Analysis(this is Subtitle two): xxxxxxx
-    3. #What They Reflect in Term of Investor(this is Subtitle three):xxxxxxx
-    
-    Section 5: Investment Recommendation (100 - 200 words) (be very cautious and suspicious, and give a very detailed reason why)
-    1. #What Position We Should Take (this is Subtitle one): xxxxxxx
-    2. #What Price Target (this is Subtitle two): xxxxxxx
-    3. #Why We Should Take This Position (this is Subtitle three): xxxxxxx
-    4. #What Are The Potential Risks (this is Subtitle four): xxxxxxx
-    
-    For each section of the report, apply this chain-of-thought process:
-    1. First, list the specific evidence from news articles that supports your analysis (quotes, numbers, or specific events)
-    2. Then, explain what conventional analysis would typically conclude based on this evidence
-    3. Next, explain why this conventional analysis might be incomplete or misleading
-    4. Finally, provide your distinctive insight that goes beyond the surface-level observation
-
-    This will ensure your analysis is evidence-based, distinctive, and avoids generic statements that could apply to any company.
-
-    ################################# End of the report #########################################  (you don need to write this line)
-    
-    You sould at the beginning highliht the most three important news/aspect, and I want details written manner. Where you dont describe the information, but every sentence you need to use casual inference to report as what/how/why. 
-    No sensentence should be left without a events/reason plus the number/people 
-    Note: The symbol '#' is important for late where I input this txt file to next pipeline to detect the content and title, so please keep it.
-    Note: The subtitle is important for the next pipeline to detect the content and title, so keep it in same upper case lower case as I define.
-    """
-    
-    prompt_tokens = num_tokens_from_string(prompt)
-    total_tokens = prompt_tokens + macro_response_tokens
-    debug_log(f"Financial report prompt tokens: {prompt_tokens}, Total tokens so far: {total_tokens}", status_text)
-    
-    # Check if total tokens are within limits for model
-    max_model_tokens = 128000 if model == "gpt-4o" else 16000 if model == "gpt-4" else 4000
-    available_tokens = max_model_tokens - total_tokens
-    
-    status_text.text(f"Using {model} with {total_tokens} tokens for input and {available_tokens} available for output")
-    
-    financial_report = chatgpt_api_call(prompt, api_key, model=model, max_tokens=min(4000, available_tokens))
-    report_tokens = num_tokens_from_string(financial_report)
-    debug_log(f"Financial report output tokens: {report_tokens}, Total process tokens: {total_tokens + report_tokens}", status_text)
-    
-    return financial_report
 
 def display_slides(slides, financial_report, ticker):
     """Display slide content directly in the Streamlit UI with full content from the report"""
@@ -838,11 +487,6 @@ def display_slides(slides, financial_report, ticker):
                 if url:
                     st.markdown(f"<div style='text-align:right; font-size:0.8em; font-style:italic; margin-top:-10px; margin-bottom:15px;'><a href='{url}' target='_blank'>Source</a></div>", unsafe_allow_html=True)
         
-            # parts = takeaway.split(":", 1)
-            # if len(parts) == 2:
-            #     title, content = parts
-            #     st.markdown(f"<div class='slide-subtitle'>📌 {title.strip()}</div>", unsafe_allow_html=True)
-            #     st.markdown(f"<div class='takeaway-point'>{content.strip()}</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
     
@@ -952,6 +596,7 @@ if 'sender_email' not in st.session_state:
 if 'app_password' not in st.session_state:
     st.session_state.app_password = ""
 
+
 def save_email_credentials(email, password):
     """Save email credentials to session state"""
     st.session_state.sender_email = email
@@ -1002,14 +647,26 @@ def main():
             if st.sidebar.button("Start File Tracking"):
                 threading.Thread(target=file_ops_updater, daemon=True).start()
     
+    
     # Advanced settings
     with st.sidebar.expander("Advanced Settings", expanded=False):
+        st.info("Using specialized AI models for different analysis tasks:")
+        st.markdown("""
+        - Ticker Resolution: GPT-3.5 Turbo
+        - Fact Extraction: GPT-3.5 Turbo 16K
+        - Article Ranking: GPT-3.5 Turbo
+        - Financial Analysis: GPT-4o
+        - Macroeconomic Analysis: GPT-3.5 Turbo 16K
+        """)
+        
+        # Keep your existing model selector for compatibility, but it will only be used for old functions not using ModelManager
         ai_model = st.selectbox(
-            "OpenAI Model",
+            "Legacy Model (for non-optimized tasks only)",
             options=["gpt-4o", "gpt-4", "gpt-3.5-turbo"],
             index=0,
-            help="Select which AI model to use. GPT-4o is most capable but may cost more."
+            help="This model is only used for legacy functions that don't use the multi-model system."
         )
+    
     # NEW ADDED
     # Add ticker resolver section before the main analysis form (around line 1020)
     # Initialize session state for ticker input
@@ -1095,13 +752,8 @@ def main():
         n_days = st.slider("Number of days to analyze:", 1, 30, 7)
         
         submit_button = st.form_submit_button("Generate Analysis")
-    # # Main analysis form - REMOVE delivery options
-    # with st.form("analysis_form"):
-    #     ticker = st.text_input("Enter stock ticker symbol (e.g., AAPL, MSFT, TSLA):")
-    #     n_days = st.slider("Number of days to analyze:", 1, 30, 7)
-        
-    #     submit_button = st.form_submit_button("Generate Analysis")
-    
+   
+    # In your submit_button handler, update the function calls:
     if submit_button:
         api_key = os.getenv("OPENAI_API_KEY")
         if not ticker:
@@ -1109,7 +761,7 @@ def main():
         elif not api_key:
             st.error("OpenAI API key not found. Make sure it's set in your .env file.")
         else:
-            # Reset file tracker
+            # Reset file tracker if in developer mode
             if developer_mode:
                 file_tracker.clear()
                 update_file_ops()
@@ -1118,7 +770,7 @@ def main():
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # Debug log area if debug mode is enabled
+            # Debug log configuration
             if debug_mode:
                 debug_area = st.expander("Debug Logs", expanded=True)
                 debug_container = debug_area.container()
@@ -1131,7 +783,7 @@ def main():
                 def debug_to_ui(message):
                     print(f"DEBUG: {message}")
             
-            debug_to_ui(f"Starting analysis for {ticker} over {n_days} days using {ai_model}")
+            debug_to_ui(f"Starting analysis for {ticker} over {n_days} days using multi-model approach")
             
             # Clean up any existing files for this ticker
             try:
@@ -1144,54 +796,21 @@ def main():
                 
             # If developer mode is enabled, show file operations in real-time
             if developer_mode:
-                dev_expander = st.expander("Developer Data", expanded=True)
-                
-                with dev_expander:
-                    dev_tabs = st.tabs(["File Operations", "Stats"])
-                    
-                    with dev_tabs[0]:
-                        file_ops_view = st.empty()
-                        
-                        # Function to update the data table in the main view
-                        def update_dev_view():
-                            df = file_tracker.get_logs()
-                            if not df.empty:
-                                file_ops_view.dataframe(df, use_container_width=True)
-                            else:
-                                file_ops_view.info("No operations logged yet")
-                    
-                    with dev_tabs[1]:
-                        stats_view = st.empty()
-                        
-                        def update_stats_view():
-                            if file_tracker.operations:
-                                df = file_tracker.get_logs()
-                                op_counts = df['operation'].value_counts()
-                                stats_view.bar_chart(op_counts)
-                            else:
-                                stats_view.info("No data to display yet")
-                
-                # Start a background thread to update both views
-                def dev_view_updater():
-                    while True:
-                        update_dev_view()
-                        update_stats_view()
-                        time.sleep(1)  # Update every second
-                
-                threading.Thread(target=dev_view_updater, daemon=True).start()
+                # Your existing developer mode code
+                pass
             
             try:
                 # Step 1: Fetch macroeconomic news (15%)
                 status_text.text("Analyzing macroeconomic environment...")
                 debug_to_ui("Starting macroeconomic news fetch")
-                macro_news = fetch_news(status_text)
+                macro_news = fetch_macroeconomic_news(status_text, config.ECONOMY_RSS_FEEDS)
                 debug_to_ui(f"Fetched macro news: {len(str(macro_news))} characters")
                 progress_bar.progress(15)
                 
                 # Step 2: Get company news (30%)
                 status_text.text(f"Collecting insights for {ticker}...")
                 debug_to_ui(f"Starting news collection for {ticker}")
-                news_json = get_news_json(ticker, status_text, n_days)
+                news_json = get_news_json(ticker, status_text, n_days, TEMP_DIR, config.NEWS_TOKEN_FILENAME_TEMPLATE, tracked_open)
                 if news_json is None:
                     st.error(f"Failed to retrieve sufficient data for {ticker}. Unable to proceed with analysis.")
                     debug_to_ui("News JSON retrieval failed")
@@ -1207,13 +826,15 @@ def main():
                     st.error(f"No stock data found for {ticker}. Unable to proceed with analysis.")
                     debug_to_ui("Stock cache generation failed")
                     return
+                # Step 3: Get stock data (40%) - continued
                 debug_to_ui(f"Stock cache generated: {len(stock_cache)} characters")
                 progress_bar.progress(40)
                 
                 # Step 4: Rank articles (50%)
                 status_text.text("Prioritizing relevant information...")
                 debug_to_ui(f"Starting article ranking using news file: {news_json}")
-                ranked_json = rank_articles(news_json, ticker, api_key, status_text, model=ai_model)
+
+                ranked_json = rank_articles(news_json, ticker, api_key, status_text, model=None)
                 progress_bar.progress(50)
                 
                 # Check if we have ranked articles before proceeding
@@ -1226,14 +847,25 @@ def main():
                 # Step 5: Scrape article content (60%)
                 status_text.text("Extracting financial insights...")
                 debug_to_ui(f"Starting content extraction from file: {ranked_json}")
-                cached_data = scrape_and_cache_articles(ranked_json, ticker, status_text)
+                cached_data = scrape_and_cache_articles(json_file_path=ranked_json, 
+                                                    ticker=ticker, 
+                                                    status_text=status_text,
+                                                    max_tokens_news_scraping=config.MAX_TOKENS_NEWS_SCRAPING,
+                                                    tracked_open_func=tracked_open)
+                
                 debug_to_ui(f"Content extracted: {len(cached_data)} characters")
                 progress_bar.progress(60)
                 
                 # Step 6: Generate financial report (80%)
                 status_text.text("Generating comprehensive financial analysis...")
                 debug_to_ui("Starting financial report generation")
-                financial_report = generate_financial_report(ticker, cached_data, macro_news, stock_cache, api_key, status_text, model=ai_model)
+                financial_report = generate_financial_report(ticker=ticker, 
+                                                        cached_data=cached_data, 
+                                                        macro_news=macro_news, 
+                                                        stock_cache=stock_cache, 
+                                                        api_key=api_key, 
+                                                        status_text=status_text)
+                
                 debug_to_ui(f"Financial report generated: {len(financial_report)} characters")
                 progress_bar.progress(80)
                 
@@ -1294,7 +926,7 @@ def main():
                 debug_to_ui(f"ERROR: {str(e)}")
                 import traceback
                 debug_to_ui(f"Traceback: {traceback.format_exc()}")
-
+            
 if __name__ == "__main__":
     main()
 

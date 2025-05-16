@@ -1,7 +1,7 @@
 # ticker_resolver.py
 import json
 import yfinance as yf
-from openai import OpenAI
+from model_manager import ModelManager
 
 def get_basic_info(ticker_symbol):
     """Get basic info about a ticker to validate if it exists"""
@@ -20,44 +20,59 @@ def get_basic_info(ticker_symbol):
         print(f"Error checking {ticker_symbol}: {str(e)}")
         return {"valid": False}
 
-def ai_ticker_resolver(input_text, api_key):
-    """Use OpenAI to identify stock ticker from user input"""
-    client = OpenAI(api_key=api_key)
+def resolve_ticker(input_text, api_key):
+    """Master function to resolve ticker symbols using ModelManager"""
+    # First check if the input is already a valid ticker
+    direct_check = get_basic_info(input_text.upper())
+    
+    if direct_check["valid"]:
+        return {
+            "is_valid_ticker": True,
+            "input": input_text,
+            "best_match": input_text.upper(),
+            "company_name": direct_check["name"],
+            "current_price": direct_check["current_price"],
+            "alternatives": [],
+            "confidence": 100,
+            "verified": True
+        }
+    
+    # If not a valid ticker, use model to resolve
+    model_manager = ModelManager(api_key)
+    
+    system_message = "You are a financial assistant that helps identify stock ticker symbols."
+    prompt = f"""
+    The user has entered: "{input_text}"
+    
+    If this is already a valid stock ticker symbol, confirm it.
+    If this appears to be a company name or misspelled ticker, identify the most likely correct ticker symbol.
+    If there are multiple possibilities, list the most likely options (max 3).
+    
+    Include major US stocks, but also global exchanges (add exchange suffix if non-US).
+    
+    Respond in this JSON format:
+    {{
+        "is_valid_ticker": true/false,
+        "input": "what the user entered",
+        "best_match": "TICKER",
+        "company_name": "Company Name",
+        "alternatives": [
+            {{"ticker": "ALT1", "name": "Alternative Company 1"}},
+            {{"ticker": "ALT2", "name": "Alternative Company 2"}}
+        ],
+        "confidence": 0-100
+    }}
+    """
     
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",  # You can use cheaper models like gpt-3.5-turbo for this task
-            messages=[
-                {"role": "system", "content": "You are a financial assistant that helps identify stock ticker symbols."},
-                {"role": "user", "content": f"""
-                The user has entered: "{input_text}"
-                
-                If this is already a valid stock ticker symbol, confirm it.
-                If this appears to be a company name or misspelled ticker, identify the most likely correct ticker symbol.
-                If there are multiple possibilities, list the most likely options (max 3).
-                
-                Include major US stocks, but also global exchanges (add exchange suffix if non-US).
-                
-                Respond in this JSON format:
-                {{
-                    "is_valid_ticker": true/false,
-                    "input": "what the user entered",
-                    "best_match": "TICKER",
-                    "company_name": "Company Name",
-                    "alternatives": [
-                        {{"ticker": "ALT1", "name": "Alternative Company 1"}},
-                        {{"ticker": "ALT2", "name": "Alternative Company 2"}}
-                    ],
-                    "confidence": 0-100
-                }}
-                """}
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=500,
-            temperature=0.1  # Keep it deterministic
+        response = model_manager.invoke_model(
+            "ticker_resolver", 
+            prompt, 
+            system_message=system_message,
+            response_format={"type": "json_object"}
         )
         
-        ai_result = json.loads(response.choices[0].message.content)
+        ai_result = json.loads(response)
         
         # Verify the suggested ticker actually exists
         if ai_result.get("best_match"):
@@ -92,23 +107,3 @@ def ai_ticker_resolver(input_text, api_key):
             "confidence": 0,
             "error": str(e)
         }
-
-def resolve_ticker(input_text, api_key):
-    """Master function to resolve ticker symbols"""
-    # First check if the input is already a valid ticker
-    direct_check = get_basic_info(input_text.upper())
-    
-    if direct_check["valid"]:
-        return {
-            "is_valid_ticker": True,
-            "input": input_text,
-            "best_match": input_text.upper(),
-            "company_name": direct_check["name"],
-            "current_price": direct_check["current_price"],
-            "alternatives": [],
-            "confidence": 100,
-            "verified": True
-        }
-    
-    # If not a valid ticker, use AI to resolve
-    return ai_ticker_resolver(input_text, api_key)

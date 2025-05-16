@@ -6,10 +6,21 @@ from datetime import datetime, timedelta
 import pytz
 import os
 import time
-import tiktoken 
+import tiktoken # For num_tokens_from_string
+import re
 
-import config #
+# Assuming 'config' contains necessary configurations like TEMP_DIR_NAME, ECONOMY_RSS_FEEDS, etc.
+# You might need to adjust how 'config' is accessed or pass specific config values as parameters
+import config # Or pass config values as arguments to functions
 
+# Assuming TEMP_DIR is defined in config or needs to be passed or redefined here
+# For simplicity, let's assume it's accessible via config or passed if needed.
+# If TEMP_DIR is used directly from main.py's global scope, you'll need to pass it as an argument.
+# TEMP_DIR = os.path.join(tempfile.gettempdir(), config.TEMP_DIR_NAME)
+# os.makedirs(TEMP_DIR, exist_ok=True)
+
+
+# Helper function (if it's only used by web functions, otherwise keep in main or a common utils file)
 def num_tokens_from_string(string, encoding_name="cl100k_base"):
     """Returns the number of tokens in a text string."""
     encoding = tiktoken.get_encoding(encoding_name)
@@ -23,6 +34,7 @@ def extract_date(date_string): # Helper for get_news_json
     except ValueError:
         return None
 
+# Functions from your main.py
 def extract_news_content(url):
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
@@ -33,11 +45,11 @@ def extract_news_content(url):
     except Exception as e:
         return f"⚠ Extraction failed: {str(e)}"
 
-def fetch_news(status_text, economy_rss_feeds, log_network_operation_func=None): 
+def fetch_news(status_text, economy_rss_feeds, log_network_operation_func=None): # Added log_network_operation_func as optional
     news_cache = {}
     counter = 0
 
-    for source_name, rss_url in economy_rss_feeds.items(): 
+    for source_name, rss_url in economy_rss_feeds.items(): # Assuming config.ECONOMY_RSS_FEEDS is passed
         if log_network_operation_func:
             log_network_operation_func(rss_url, "RSS_FETCH", f"Fetching macroeconomic news from {source_name}")
         feed = feedparser.parse(rss_url)
@@ -45,12 +57,12 @@ def fetch_news(status_text, economy_rss_feeds, log_network_operation_func=None):
 
         for idx, entry in enumerate(feed.entries[:3], start=1):
             counter += 1
-            if status_text: 
+            if status_text: # Check if status_text is provided
                 status_text.text(f"Reading macroeconomic data... {counter}")
             
             if log_network_operation_func:
                  log_network_operation_func(entry.link, "SCRAPE_ATTEMPT", f"Extracting content for {entry.title[:30]}...")
-            full_content = extract_news_content(entry.link) 
+            full_content = extract_news_content(entry.link) # Uses extract_news_content from this file
 
             article_data = {
                 "title": entry.title,
@@ -59,26 +71,26 @@ def fetch_news(status_text, economy_rss_feeds, log_network_operation_func=None):
                 "content": full_content
             }
             source_articles.append(article_data)
-            time.sleep(1) 
+            time.sleep(1) # Consider making this configurable or removing if not essential
 
         news_cache[source_name] = source_articles
 
     return news_cache
 
-def scrape_news(url): 
+def scrape_news(url): # This seems to be a utility for checking accessibility
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     try:
-        response = requests.get(url, headers=headers, timeout=1) 
+        response = requests.get(url, headers=headers, timeout=1) # Short timeout, consider if this is for quick check
         if response.status_code != 200:
-            return 0
+            return 0 # Not accessible or error
 
         soup = BeautifulSoup(response.text, "html.parser")
         article = soup.find("article") or soup.find("div", {"class": "content"})
-        return 1 if article else 0 
+        return 1 if article else 0 # Found content structure
     except:
-        return 0 
+        return 0 # Any exception means not accessible for this quick check
 
 def get_news_json(ticker, status_text, n_days, temp_dir, news_token_filename_template, 
                   log_network_operation_func=None, debug_log_func=None, tracked_open_func=open):
@@ -163,6 +175,7 @@ def get_news_json(ticker, status_text, n_days, temp_dir, news_token_filename_tem
     if debug_log_func: debug_log_func(f"Writing to file: {filename}", status_text)
     
     try:
+        # Use the passed tracked_open_func, default to standard open
         with tracked_open_func(filename, 'w', encoding='utf-8', tracker_msg=f"Writing {len(token_data)} news tokens") as json_file:
             json.dump(token_data, json_file, indent=4)
         if debug_log_func: debug_log_func(f"Successfully wrote {len(token_data)} articles to {filename}", status_text)
@@ -206,7 +219,7 @@ def scrape_and_cache_articles(json_file_path, ticker, status_text, max_tokens_ne
             if log_network_operation_func:
                 log_network_operation_func(url, "SCRAPE", f"Scraping article content: {title[:30]}...")
             
-            response = requests.get(url, headers=headers, timeout=10) 
+            response = requests.get(url, headers=headers, timeout=10) # Original timeout
             content_size = len(response.content)
 
             if log_network_operation_func:
@@ -217,7 +230,6 @@ def scrape_and_cache_articles(json_file_path, ticker, status_text, max_tokens_ne
                 continue
 
             soup = BeautifulSoup(response.text, "html.parser")
-
             # Enhanced article body selection
             article_body = soup.find("article") or \
                            soup.find("div", class_=re.compile(r'(article|content|story|post)-?(body|content|text)', re.I)) or \
@@ -249,10 +261,15 @@ def scrape_and_cache_articles(json_file_path, ticker, status_text, max_tokens_ne
             continue
 
     if not cache_content:
+        # This warning should be handled in main.py
+        # print("Warning: Failed to extract content from any of the articles")
         return "No article content could be extracted"
     
     if debug_log_func: debug_log_func(f"Successfully scraped {success_counter} out of {scrape_counter} articles. Total tokens: {total_tokens}", status_text)
     
     full_content_str = "\n".join(cache_content)
-   
+    # File tracker logging would need file_tracker instance or a callback.
+    # For simplicity, this is omitted here but should be considered.
+    # Example: if file_tracker_log_func: file_tracker_log_func("CACHE", f"{ticker}_article_cache", ..., len(full_content_str))
+
     return full_content_str
