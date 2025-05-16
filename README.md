@@ -11,6 +11,18 @@ pip install -r agent/requirements.txt
 # Create a .env file with your OpenAI API key
 echo "OPENAI_API_KEY=your_openai_api_key_here" > agent/.env
 ```
+### Installing `lxml`
+The `lxml` library is required for HTML/XML parsing. Depending on your system, follow the instructions below.
+
+#### macOS (Apple Silicon M1/M2)
+```bash
+conda install -c conda-forge lxml==4.9.3
+```
+
+#### Windows/Linux/Other macOS (x86_64)
+```bash
+pip install lxml==4.9.3
+```
 
 ## Usage
 
