@@ -1,4 +1,4 @@
-# Stock AI
+# Stock Tracker
 
 A Python application that generates AI-powered financial analysis reports and presentations from stock ticker symbols.
 
