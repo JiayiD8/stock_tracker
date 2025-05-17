@@ -930,8 +930,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-    ### This is how you should run 
-    ### 1). exit()
-    ### 2). streamlit run /Users/xikinki/Desktop/Stock/app.py
-
 

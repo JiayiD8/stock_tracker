@@ -29,8 +29,6 @@ PAGE_CONFIG = {
 }
 
 # --- CSS Styles ---
-# It's often better to put extensive CSS in a separate .css file and load it.
-# However, for direct config, you can keep it here.
 CSS_THEME = """
 <style>
     /* Global theme - Light */

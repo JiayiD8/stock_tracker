@@ -9,18 +9,8 @@ import time
 import tiktoken # For num_tokens_from_string
 import re
 
-# Assuming 'config' contains necessary configurations like TEMP_DIR_NAME, ECONOMY_RSS_FEEDS, etc.
-# You might need to adjust how 'config' is accessed or pass specific config values as parameters
-import config # Or pass config values as arguments to functions
+import config
 
-# Assuming TEMP_DIR is defined in config or needs to be passed or redefined here
-# For simplicity, let's assume it's accessible via config or passed if needed.
-# If TEMP_DIR is used directly from main.py's global scope, you'll need to pass it as an argument.
-# TEMP_DIR = os.path.join(tempfile.gettempdir(), config.TEMP_DIR_NAME)
-# os.makedirs(TEMP_DIR, exist_ok=True)
-
-
-# Helper function (if it's only used by web functions, otherwise keep in main or a common utils file)
 def num_tokens_from_string(string, encoding_name="cl100k_base"):
     """Returns the number of tokens in a text string."""
     encoding = tiktoken.get_encoding(encoding_name)
@@ -34,7 +24,6 @@ def extract_date(date_string): # Helper for get_news_json
     except ValueError:
         return None
 
-# Functions from your main.py
 def extract_news_content(url):
     try:
         response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
@@ -49,7 +38,7 @@ def fetch_news(status_text, economy_rss_feeds, log_network_operation_func=None):
     news_cache = {}
     counter = 0
 
-    for source_name, rss_url in economy_rss_feeds.items(): # Assuming config.ECONOMY_RSS_FEEDS is passed
+    for source_name, rss_url in economy_rss_feeds.items(): 
         if log_network_operation_func:
             log_network_operation_func(rss_url, "RSS_FETCH", f"Fetching macroeconomic news from {source_name}")
         feed = feedparser.parse(rss_url)
@@ -71,13 +60,13 @@ def fetch_news(status_text, economy_rss_feeds, log_network_operation_func=None):
                 "content": full_content
             }
             source_articles.append(article_data)
-            time.sleep(1) # Consider making this configurable or removing if not essential
+            time.sleep(1)
 
         news_cache[source_name] = source_articles
 
     return news_cache
 
-def scrape_news(url): # This seems to be a utility for checking accessibility
+def scrape_news(url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
@@ -161,8 +150,6 @@ def get_news_json(ticker, status_text, n_days, temp_dir, news_token_filename_tem
             if debug_log_func: debug_log_func(f"Error fetching from {rss_url}: {str(e)}", status_text)
     
     if not token_data:
-        # Note: st.warning needs Streamlit context, so this logic might be better handled in main.py
-        # or passed as a callback. For simplicity, returning None and main.py can show the warning.
         # if total_found > 0:
         #     print(f"Warning: Found {total_found} articles about {ticker}, but none were recent or accessible")
         # else:
@@ -261,15 +248,10 @@ def scrape_and_cache_articles(json_file_path, ticker, status_text, max_tokens_ne
             continue
 
     if not cache_content:
-        # This warning should be handled in main.py
-        # print("Warning: Failed to extract content from any of the articles")
         return "No article content could be extracted"
     
     if debug_log_func: debug_log_func(f"Successfully scraped {success_counter} out of {scrape_counter} articles. Total tokens: {total_tokens}", status_text)
     
     full_content_str = "\n".join(cache_content)
-    # File tracker logging would need file_tracker instance or a callback.
-    # For simplicity, this is omitted here but should be considered.
-    # Example: if file_tracker_log_func: file_tracker_log_func("CACHE", f"{ticker}_article_cache", ..., len(full_content_str))
 
     return full_content_str

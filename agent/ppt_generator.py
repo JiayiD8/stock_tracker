@@ -26,7 +26,6 @@ def create_slide_preview(slide_type, content, ticker=None):
     text_color = '#4b5563'   # Medium dark for content
     accent_color = '#3b82f6'  # Blue accent color
     title_size = 20
-    # subtitle_size = 16 # Not used in current implementation
     content_size = 12
 
     if slide_type == "cover":
@@ -35,21 +34,6 @@ def create_slide_preview(slide_type, content, ticker=None):
         ax.text(0.5, 0.4, ticker, color=accent_color, fontsize=42, ha='center', weight='bold')
 
     elif slide_type == "key_takeaways":
-        # Key takeaways slide
-        # ax.text(0.5, 0.85, "Three Key Takeaways ⚠️", color=title_color, fontsize=title_size, ha='center', weight='bold')
-        # takeaways = content.split('\n')
-        # takeaways = [t for t in takeaways if t.strip() and t.strip().startswith(('1.', '2.', '3.'))]
-        # y_positions = [0.7, 0.5, 0.3]
-        # for i, takeaway in enumerate(takeaways[:3]):
-        #     if i < len(y_positions):
-            
-        #         short_takeaway = takeaway[:50] + "..." if len(takeaway) > 50 else takeaway
-        #         rect = plt.Rectangle((0.1, y_positions[i]-0.05), 0.8, 0.1, fill=True, 
-        #                            color='#dbeafe', alpha=0.5, transform=ax.transAxes)
-        #         ax.add_patch(rect)
-        #         ax.text(0.5, y_positions[i], short_takeaway, color=text_color, fontsize=content_size,
-        #               ha='center', wrap=True)
-        # NEW ADDED
         ax.text(0.5, 0.85, "Three Key Takeaways ⚠️", color=title_color, fontsize=title_size, ha='center', weight='bold')
         
         # Extract takeway lines with URLs
@@ -228,7 +212,6 @@ def create_ppt(ticker, financial_report, status_text):
     p.font.name = SUBTITLE_FONT; p.alignment = PP_ALIGN.CENTER
 
     # ---- Slide 1: Three Key Takeaways ----
-    # NEW ADDED
     slide = ppt.slides.add_slide(slide_layout)
     set_slide_background(slide)
     add_main_title(slide, "Three Key Takeaways⚠️")
